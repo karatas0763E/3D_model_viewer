@@ -11,6 +11,7 @@ import vehiclesData from "@/data/vehicles/vehicles.json";
 import { getHotspots } from "@/data/hotspots";
 import { useAppStore } from "@/store/useAppStore";
 import type { Vehicle } from "@/types";
+import { initGLTFLoader, preloadGLB } from "@/hooks/useGLBLoader";
 
 const VehicleViewer = dynamic(
   () => import("@/components/VehicleViewer/VehicleViewer"),
@@ -41,12 +42,14 @@ export default function VehiclePage({ params }: PageProps) {
   const setSelectedProduct = useAppStore((s) => s.setSelectedProduct);
 
   useEffect(() => {
+    initGLTFLoader();
+    preloadGLB(vehicle.glbPath);
     return () => {
       setPanelsOpen(false);
       setSelectedHotspot(null);
       setSelectedProduct(null);
     };
-  }, [id, setPanelsOpen, setSelectedHotspot, setSelectedProduct]);
+  }, [id, vehicle.glbPath, setPanelsOpen, setSelectedHotspot, setSelectedProduct]);
 
   const handleRequestQuote = () => {
     alert(

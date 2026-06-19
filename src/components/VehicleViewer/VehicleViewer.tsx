@@ -1,6 +1,13 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useMemo, useLayoutEffect } from "react";
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  useLayoutEffect,
+  Suspense,
+} from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, Environment, useGLTF, useProgress } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -10,17 +17,19 @@ import type { Vehicle, Hotspot } from "@/types";
 import Hotspots from "@/components/Hotspots/Hotspots";
 import LoadingSpinner from "@/components/LoadingSpinner";
 import { useAppStore } from "@/store/useAppStore";
+import { initGLTFLoader, preloadGLB } from "@/hooks/useGLBLoader";
 import {
+  cloneModelScene,
   computeSceneFit,
-  createGLTFExtendLoader,
   enhanceMeshQualityOnce,
-  registerCanvasRenderer,
 } from "@/utils/gltfLoaderExtensions";
 import {
   resolveHotspotPositions,
   type HotspotInput,
 } from "@/utils/hotspotPositions";
 import { FaSync, FaPlus, FaMinus } from "react-icons/fa";
+
+initGLTFLoader();
 
 function VehicleModel({
   modelUrl,
@@ -39,12 +48,15 @@ function VehicleModel({
 }) {
   const { gl } = useThree();
   const modelRootRef = useRef<THREE.Group>(null);
-  const extendLoader = useMemo(() => createGLTFExtendLoader(gl), [gl]);
-  const { scene: gltfScene } = useGLTF(modelUrl, true, true, extendLoader);
-  const fit = useMemo(() => computeSceneFit(gltfScene), [gltfScene]);
+  const readySentRef = useRef(false);
+
+  // Optimized GLBs: Draco + WebP only (no KTX2 / meshopt).
+  const { scene: gltfScene } = useGLTF(modelUrl, true, false);
+  const displayScene = useMemo(() => cloneModelScene(gltfScene), [gltfScene]);
+  const fit = useMemo(() => computeSceneFit(displayScene), [displayScene]);
 
   useLayoutEffect(() => {
-    enhanceMeshQualityOnce(gltfScene, gl.capabilities.getMaxAnisotropy());
+    enhanceMeshQualityOnce(displayScene, gl.capabilities.getMaxAnisotropy());
 
     modelRootRef.current?.updateMatrixWorld(true);
     if (modelRootRef.current) {
@@ -53,13 +65,16 @@ function VehicleModel({
       );
     }
 
-    onReady();
-  }, [gltfScene, gl, hotspotInputs, onReady, onHotspotsResolved]);
+    if (!readySentRef.current) {
+      readySentRef.current = true;
+      onReady();
+    }
+  }, [displayScene, gl, hotspotInputs, onReady, onHotspotsResolved]);
 
   return (
     <group ref={modelRootRef} rotation={rotation} scale={scale * fit.fitScale}>
       <group position={fit.center}>
-        <primitive object={gltfScene} />
+        <primitive object={displayScene} />
       </group>
     </group>
   );
@@ -85,15 +100,17 @@ interface SceneProps {
   interactive: boolean;
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
   onModelReady: () => void;
+  showEnvironment: boolean;
 }
 
-function Scene({
+function SceneContent({
   vehicle,
   hotspotInputs,
   autoRotate,
   interactive,
   controlsRef,
   onModelReady,
+  showEnvironment,
 }: SceneProps) {
   const [hotspots, setHotspots] = useState<Hotspot[]>([]);
 
@@ -105,11 +122,11 @@ function Scene({
   return (
     <>
       <CameraController position={vehicle.cameraPosition} />
-      <ambientLight intensity={0.6} />
+      <ambientLight intensity={0.65} />
       <directionalLight position={[10, 10, 5]} intensity={1.2} castShadow />
-      <directionalLight position={[-5, 5, -5]} intensity={0.4} />
-      <hemisphereLight args={["#ffffff", "#444444", 0.5]} />
-      <Environment preset="city" />
+      <directionalLight position={[-5, 5, -5]} intensity={0.45} />
+      <hemisphereLight args={["#ffffff", "#444444", 0.55]} />
+      {showEnvironment && <Environment preset="city" background={false} />}
       <VehicleModel
         modelUrl={vehicle.glbPath}
         rotation={vehicle.modelRotation}
@@ -141,28 +158,29 @@ interface VehicleViewerProps {
   interactive?: boolean;
 }
 
-interface VehicleViewerContentProps extends VehicleViewerProps {
-  onRetry: () => void;
-}
-
 function VehicleViewerContent({
   vehicle,
   hotspotInputs,
   interactive = true,
-  onRetry,
-}: VehicleViewerContentProps) {
-  const { progress, errors } = useProgress();
+}: VehicleViewerProps) {
+  const { progress } = useProgress();
   const [modelReady, setModelReady] = useState(false);
-  const error = errors.length > 0 ? errors.join(", ") : null;
-  const isLoaded = modelReady && !error;
+  const [showEnvironment, setShowEnvironment] = useState(false);
 
   const setLoadingProgress = useAppStore((s) => s.setLoadingProgress);
   const setIsModelLoaded = useAppStore((s) => s.setIsModelLoaded);
   const [autoRotate, setAutoRotate] = useState(false);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
+  useEffect(() => {
+    preloadGLB(vehicle.glbPath);
+  }, [vehicle.glbPath]);
+
   const handleModelReady = useMemo(
-    () => () => setModelReady(true),
+    () => () => {
+      setModelReady(true);
+      setShowEnvironment(true);
+    },
     []
   );
 
@@ -171,8 +189,8 @@ function VehicleViewerContent({
   }, [progress, modelReady, setLoadingProgress]);
 
   useEffect(() => {
-    setIsModelLoaded(isLoaded);
-  }, [isLoaded, setIsModelLoaded]);
+    setIsModelLoaded(modelReady);
+  }, [modelReady, setIsModelLoaded]);
 
   useEffect(() => {
     return () => {
@@ -207,24 +225,10 @@ function VehicleViewerContent({
   return (
     <div className="relative h-full min-h-[calc(100vh-12rem)] w-full lg:min-h-[calc(100vh-10rem)]">
       <AnimatePresence>
-        {!isLoaded && !error && (
-          <LoadingSpinner progress={modelReady ? 100 : progress} />
+        {!modelReady && (
+          <LoadingSpinner progress={progress} />
         )}
       </AnimatePresence>
-
-      {error && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/90 backdrop-blur-sm">
-          <p className="mb-2 text-sm font-medium text-red-600">Error al cargar el modelo 3D</p>
-          <p className="mb-4 max-w-xs text-center text-xs text-gray-500">{error}</p>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="rounded-xl bg-[#1e88e5] px-6 py-2 text-sm font-semibold text-white hover:bg-[#1565c0]"
-          >
-            Reintentar
-          </button>
-        </div>
-      )}
 
       <div
         className={`absolute left-2 top-1/2 z-10 flex -translate-y-1/2 flex-col gap-2 transition-opacity sm:left-4 ${
@@ -238,7 +242,7 @@ function VehicleViewerContent({
               key={ctrl.label}
               type="button"
               onClick={() => handleControlAction(ctrl.action)}
-              disabled={!interactive || !isLoaded}
+              disabled={!interactive || !modelReady}
               className="flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white shadow-md hover:bg-blue-50 sm:h-12 sm:w-12"
               aria-label={ctrl.label}
               title={ctrl.label}
@@ -250,11 +254,11 @@ function VehicleViewerContent({
       </div>
 
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: isLoaded ? 1 : 0 }}
-        transition={{ duration: 0.8 }}
+        initial={false}
+        animate={{ opacity: modelReady ? 1 : 0.15 }}
+        transition={{ duration: 0.4 }}
         className={`absolute inset-0 ${
-          interactive && isLoaded ? "" : "pointer-events-none"
+          interactive ? "" : "pointer-events-none"
         }`}
       >
         <Canvas
@@ -262,7 +266,6 @@ function VehicleViewerContent({
           className="!h-full !w-full"
           camera={{ fov: 45, near: 0.1, far: 1000 }}
           dpr={[1, 1.5]}
-          onCreated={({ gl }) => registerCanvasRenderer(gl)}
           gl={{
             antialias: true,
             alpha: true,
@@ -276,14 +279,17 @@ function VehicleViewerContent({
             height: "100%",
           }}
         >
-          <Scene
-            vehicle={vehicle}
-            hotspotInputs={hotspotInputs}
-            autoRotate={autoRotate}
-            interactive={interactive}
-            controlsRef={controlsRef}
-            onModelReady={handleModelReady}
-          />
+          <Suspense fallback={null}>
+            <SceneContent
+              vehicle={vehicle}
+              hotspotInputs={hotspotInputs}
+              autoRotate={autoRotate}
+              interactive={interactive}
+              controlsRef={controlsRef}
+              onModelReady={handleModelReady}
+              showEnvironment={showEnvironment}
+            />
+          </Suspense>
         </Canvas>
       </motion.div>
 
@@ -298,16 +304,5 @@ function VehicleViewerContent({
 }
 
 export default function VehicleViewer(props: VehicleViewerProps) {
-  const [loadAttempt, setLoadAttempt] = useState(0);
-
-  return (
-    <VehicleViewerContent
-      key={`${props.vehicle.glbPath}:${loadAttempt}`}
-      {...props}
-      onRetry={() => {
-        useGLTF.clear(props.vehicle.glbPath);
-        setLoadAttempt((attempt) => attempt + 1);
-      }}
-    />
-  );
+  return <VehicleViewerContent key={props.vehicle.glbPath} {...props} />;
 }

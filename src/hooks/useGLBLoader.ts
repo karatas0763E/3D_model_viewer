@@ -1,20 +1,21 @@
 "use client";
 
 import { useGLTF } from "@react-three/drei";
-import {
-  createGLTFExtendLoaderWithFallback,
-  ensureBasisTranscoderPath,
-} from "@/utils/gltfLoaderExtensions";
 
 let preloadQueue: Promise<void> = Promise.resolve();
-let lastPreloadUrl: string | null = null;
 
+/** Draco + WebP optimized GLBs — no KTX2/meshopt required. */
 export function preloadGLB(url: string) {
-  if (typeof window === "undefined" || !url || url === lastPreloadUrl) return;
+  if (typeof window === "undefined" || !url) return;
 
-  lastPreloadUrl = url;
-  preloadQueue = preloadQueue.then(async () => {
-    await ensureBasisTranscoderPath();
-    useGLTF.preload(url, true, true, createGLTFExtendLoaderWithFallback());
+  preloadQueue = preloadQueue.then(() => {
+    useGLTF.preload(url, true, false);
   });
+}
+
+export function initGLTFLoader() {
+  if (typeof window === "undefined") return;
+  useGLTF.setDecoderPath(
+    "https://www.gstatic.com/draco/versioned/decoders/1.5.7/"
+  );
 }
