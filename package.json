@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev.mjs",
+    "postinstall": "node scripts/copy-basis.mjs",
+    "prebuild": "node scripts/copy-basis.mjs && node scripts/verify-glb-assets.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
